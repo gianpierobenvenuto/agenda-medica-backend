@@ -1,0 +1,146 @@
+service: agenda-medica-backend
+frameworkVersion: "3"
+plugins:
+  - serverless-plugin-typescript
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  environment:
+    DYNAMODB_TABLE: ${self:service}-appointments-${self:provider.stage}
+    SNS_TOPIC_PE: ${self:service}-sns-pe-${self:provider.stage}
+    SNS_TOPIC_CL: ${self:service}-sns-cl-${self:provider.stage}
+    EVENT_BUS: ${self:service}-bus-${self:provider.stage}
+
+    MYSQL_HOST: ${env:MYSQL_HOST}
+    MYSQL_USER: ${env:MYSQL_USER}
+    MYSQL_PASSWORD: ${env:MYSQL_PASSWORD}
+    MYSQL_DATABASE: ${env:MYSQL_DATABASE}
+
+functions:
+  # POST crea (publica a SNS)
+  appointment:
+    handler: src/presentation/appointment.handler
+    events:
+      - httpApi:
+          path: /appointments
+          method: post
+
+  # GET lista por insuredId
+  appointmentGet:
+    handler: src/presentation/appointmentGet.handler
+    events:
+      - httpApi:
+          path: /appointments/{insuredId}
+          method: get
+
+  # Inserta en MySQL para país PE
+  appointmentPe:
+    handler: src/presentation/appointment_pe.handler
+    events:
+      - sns: ${self:provider.environment.SNS_TOPIC_PE}
+
+  # Inserta en MySQL para país CL
+  appointmentCl:
+    handler: src/presentation/appointment_cl.handler
+    events:
+      - sns: ${self:provider.environment.SNS_TOPIC_CL}
+
+  # Consume confirmaciones desde SQS y actualiza DynamoDB
+  appointmentConfirm:
+    handler: src/presentation/appointmentConfirm.handler
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - ConfirmQueue
+              - Arn
+
+resources:
+  Resources:
+    # Tabla DynamoDB
+    AppointmentsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DYNAMODB_TABLE}
+        AttributeDefinitions:
+          - AttributeName: appointmentId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: appointmentId
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+
+    # Topics SNS (PE y CL)
+    SnsTopicPe:
+      Type: AWS::SNS::Topic
+    SnsTopicCl:
+      Type: AWS::SNS::Topic
+
+    # Colas SQS que recibirán de SNS
+    SqsPeQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-sqs-pe-${self:provider.stage}
+    SqsClQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-sqs-cl-${self:provider.stage}
+
+    # Subscriptions SNS → SQS
+    SubscriptionPe:
+      Type: AWS::SNS::Subscription
+      Properties:
+        TopicArn: !Ref SnsTopicPe
+        Protocol: sqs
+        Endpoint: !GetAtt SqsPeQueue.Arn
+
+    SubscriptionCl:
+      Type: AWS::SNS::Subscription
+      Properties:
+        TopicArn: !Ref SnsTopicCl
+        Protocol: sqs
+        Endpoint: !GetAtt SqsClQueue.Arn
+
+    # EventBridge Bus y regla para enrutar a PE/CL
+    AppointmentBus:
+      Type: AWS::Events::EventBus
+      Properties:
+        Name: ${self:provider.environment.EVENT_BUS}
+
+    AppointmentRule:
+      Type: AWS::Events::Rule
+      Properties:
+        EventBusName: !Ref AppointmentBus
+        EventPattern:
+          source: ["application.appointment"]
+        Targets:
+          - Arn: !GetAtt SqsPeQueue.Arn
+            Id: ToPe
+          - Arn: !GetAtt SqsClQueue.Arn
+            Id: ToCl
+
+    # Cola de confirmaciones
+    ConfirmQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-confirm-queue-${self:provider.stage}
+
+    # Regla EventBridge que envía solo los eventos AppointmentConfirmed a ConfirmQueue
+    ConfirmRule:
+      Type: AWS::Events::Rule
+      Properties:
+        EventBusName: !Ref AppointmentBus
+        EventPattern:
+          source: ["application.appointment"]
+          detail-type: ["AppointmentConfirmed"]
+        Targets:
+          - Arn: !GetAtt ConfirmQueue.Arn
+            Id: ToConfirmQueue
+
+Outputs:
+  ServiceEndpoint:
+    Description: URL de despliegue HTTP API
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"

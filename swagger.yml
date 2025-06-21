@@ -1,0 +1,63 @@
+openapi: 3.0.1
+info:
+  title: API Agenda Médica
+  version: 1.0.0
+paths:
+  /appointments:
+    post:
+      summary: Crear un agendamiento
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppointmentRequest"
+      responses:
+        "200":
+          description: Agendamiento recibido
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppointmentResponse"
+  /appointments/{insuredId}:
+    get:
+      summary: Listar agendamientos
+      parameters:
+        - in: path
+          name: insuredId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Lista de agendamientos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AppointmentResponse"
+components:
+  schemas:
+    AppointmentRequest:
+      type: object
+      required: [insuredId, scheduleId, countryISO]
+      properties:
+        insuredId:
+          type: string
+        scheduleId:
+          type: integer
+        countryISO:
+          type: string
+    AppointmentResponse:
+      type: object
+      properties:
+        appointmentId:
+          type: string
+        insuredId:
+          type: string
+        status:
+          type: string
+        createdAt:
+          type: string
+          format: date-time

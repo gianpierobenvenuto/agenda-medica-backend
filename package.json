@@ -1,9 +1,21 @@
 {
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint . --ext .ts",
+    "test": "jest --coverage",
+    "deploy": "serverless deploy",
+    "offline": "serverless offline"
+  },
+  "dependencies": {
+    "aws-sdk": "^2.1360.0",
+    "mysql2": "^3.3.0"
+  },
   "devDependencies": {
-    "@types/jest": "^30.0.0",
+    "typescript": "^5.8.3",
     "jest": "^30.0.2",
+    "@types/jest": "^30.0.0",
     "serverless": "^3.40.0",
     "serverless-plugin-typescript": "^2.1.5",
-    "typescript": "^5.8.3"
+    "@types/aws-lambda": "^8.10.104"
   }
 }
