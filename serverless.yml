@@ -1,146 +1,302 @@
-service: agenda-medica-backend
-frameworkVersion: "3"
-plugins:
-  - serverless-plugin-typescript
+# @file serverless.yml
+# @author Gianpiero Benvenuto
+# @description Configura el despliegue del backend de citas médicas con Serverless Framework en AWS: define el servicio, entorno (dev/prod), proveedor (AWS, Node.js 20.x), variables de entorno, roles IAM para DynamoDB, CloudWatch, SNS, SQS y EventBridge; empaquetado, funciones Lambda (endpoints HTTP y colas SQS), y recursos gestionados (tablas DynamoDB, colas SQS, topics SNS, bus de eventos y reglas).
+
+service: reto-agenda-medica-backend
+
+useDotenv: true
+frameworkVersion: "4"
+configValidationMode: "off"
 
 provider:
   name: aws
-  runtime: nodejs18.x
+  runtime: nodejs20.x
   region: us-east-1
   stage: ${opt:stage, 'dev'}
-  environment:
-    DYNAMODB_TABLE: ${self:service}-appointments-${self:provider.stage}
-    SNS_TOPIC_PE: ${self:service}-sns-pe-${self:provider.stage}
-    SNS_TOPIC_CL: ${self:service}-sns-cl-${self:provider.stage}
-    EVENT_BUS: ${self:service}-bus-${self:provider.stage}
+  memorySize: 128
+  timeout: 10
 
-    MYSQL_HOST: ${env:MYSQL_HOST}
-    MYSQL_USER: ${env:MYSQL_USER}
-    MYSQL_PASSWORD: ${env:MYSQL_PASSWORD}
-    MYSQL_DATABASE: ${env:MYSQL_DATABASE}
+  apiGateway:
+    usagePlan:
+      throttle:
+        rateLimit: 50
+        burstLimit: 100
+
+  environment:
+    RDS_DATABASE_PE: appointments
+    TABLE_PE: appointments_pe
+    RDS_DATABASE_CL: appointments
+    TABLE_CL: appointments_cl
+    APPOINTMENTS_TABLE: ${self:service}-appointments-${self:provider.stage}
+    SNS_PE_ARN: { Ref: SnsTopicPE }
+    SNS_CL_ARN: { Ref: SnsTopicCL }
+    EVENT_BUS_NAME: appointments-bus
+    RDS_SECRET_ARN: ${env:RDS_SECRET_ARN}
+    CLOUDWATCH_LOG_GROUP: ${env:CLOUDWATCH_LOG_GROUP}
+    CLOUDWATCH_LOG_STREAM: ${env:CLOUDWATCH_LOG_STREAM}
+    RDS_HOST: ${env:RDS_HOST, 'reto-agenda-medica-backend-dev.clb6uax9fcm1.us-east-1.rds.amazonaws.com'}
+    RDS_PORT: ${env:RDS_PORT, '3306'}
+    RDS_DATABASE: ${env:RDS_DATABASE, 'appointments'}
+
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:Scan
+            - dynamodb:Query
+            - dynamodb:UpdateItem
+          Resource:
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:service}-appointments-${self:provider.stage}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:service}-appointments-${self:provider.stage}/index/InsuredIndex
+
+        - Effect: Allow
+          Action:
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+          Resource:
+            - arn:aws:logs:${self:provider.region}:*:log-group:${self:provider.environment.CLOUDWATCH_LOG_GROUP}:*
+
+        - Effect: Allow
+          Action:
+            - sns:Publish
+          Resource:
+            - !Ref SnsTopicPE
+            - !Ref SnsTopicCL
+
+        - Effect: Allow
+          Action:
+            - sqs:ReceiveMessage
+            - sqs:DeleteMessage
+            - sqs:GetQueueAttributes
+          Resource:
+            - !GetAtt SqsQueuePE.Arn
+            - !GetAtt SqsQueueCL.Arn
+            - !GetAtt CompletedAppointmentsQueue.Arn
+
+        - Effect: Allow
+          Action:
+            - secretsmanager:GetSecretValue
+          Resource:
+            - ${env:RDS_SECRET_ARN}
+
+        - Effect: Allow
+          Action:
+            - events:PutEvents
+          Resource:
+            - arn:aws:events:${self:provider.region}:${aws:accountId}:event-bus/${self:provider.environment.EVENT_BUS_NAME}
+
+  tracing:
+    lambda: true
+
+package:
+  individually: true
+  patterns:
+    - "node_modules/swagger-ui-dist/**"
+    - "openapi.json"
 
 functions:
-  # POST crea (publica a SNS)
-  appointment:
-    handler: src/presentation/appointment.handler
+  docs:
+    handler: src/handlers/docs.handler
+    tracing: Active
+    memorySize: 128
+    timeout: 5
     events:
-      - httpApi:
-          path: /appointments
+      - http:
+          path: docs
+          method: any
+          cors: true
+      - http:
+          path: docs/{proxy+}
+          method: any
+          cors: true
+      - http:
+          path: /{asset+}
+          method: any
+          cors: true
+      - http:
+          path: favicon.ico
+          method: any
+          cors: true
+
+  appointmentCreate:
+    handler: src/handlers/appointment.handler
+    memorySize: 512
+    timeout: 5
+    events:
+      - http:
+          path: appointments
           method: post
+          cors: true
 
-  # GET lista por insuredId
-  appointmentGet:
-    handler: src/presentation/appointmentGet.handler
+  appointmentList:
+    handler: src/handlers/appointment.handler
+    memorySize: 512
+    timeout: 5
     events:
-      - httpApi:
-          path: /appointments/{insuredId}
+      - http:
+          path: appointments/{insuredId}
           method: get
+          cors: true
 
-  # Inserta en MySQL para país PE
-  appointmentPe:
-    handler: src/presentation/appointment_pe.handler
-    events:
-      - sns: ${self:provider.environment.SNS_TOPIC_PE}
-
-  # Inserta en MySQL para país CL
-  appointmentCl:
-    handler: src/presentation/appointment_cl.handler
-    events:
-      - sns: ${self:provider.environment.SNS_TOPIC_CL}
-
-  # Consume confirmaciones desde SQS y actualiza DynamoDB
-  appointmentConfirm:
-    handler: src/presentation/appointmentConfirm.handler
+  appointmentPE:
+    handler: src/handlers/appointment_pe.handler
+    memorySize: 512
+    timeout: 30
     events:
       - sqs:
           arn:
-            Fn::GetAtt:
-              - ConfirmQueue
-              - Arn
+            Fn::GetAtt: [SqsQueuePE, Arn]
+          batchSize: 10
+
+  appointmentCL:
+    handler: src/handlers/appointment_cl.handler
+    memorySize: 512
+    timeout: 30
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt: [SqsQueueCL, Arn]
+          batchSize: 10
+
+  appointmentCompletedHandler:
+    handler: src/handlers/appointment_completed.handler
+    memorySize: 512
+    timeout: 30
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt: [CompletedAppointmentsQueue, Arn]
+          batchSize: 10
 
 resources:
   Resources:
-    # Tabla DynamoDB
-    AppointmentsTable:
+    AppointmentsDDBTable:
       Type: AWS::DynamoDB::Table
       Properties:
-        TableName: ${self:provider.environment.DYNAMODB_TABLE}
+        TableName: ${self:provider.environment.APPOINTMENTS_TABLE}
         AttributeDefinitions:
           - AttributeName: appointmentId
+            AttributeType: S
+          - AttributeName: insuredId
             AttributeType: S
         KeySchema:
           - AttributeName: appointmentId
             KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: InsuredIndex
+            KeySchema:
+              - AttributeName: insuredId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
         BillingMode: PAY_PER_REQUEST
 
-    # Topics SNS (PE y CL)
-    SnsTopicPe:
-      Type: AWS::SNS::Topic
-    SnsTopicCl:
-      Type: AWS::SNS::Topic
-
-    # Colas SQS que recibirán de SNS
-    SqsPeQueue:
+    CompletedAppointmentsQueue:
       Type: AWS::SQS::Queue
       Properties:
-        QueueName: ${self:service}-sqs-pe-${self:provider.stage}
-    SqsClQueue:
+        QueueName: completed-appointments-queue
+
+    CompletedAppointmentsRule:
+      Type: AWS::Events::Rule
+      Properties:
+        Name: CompletedAppointmentsRule
+        EventBusName: ${self:provider.environment.EVENT_BUS_NAME}
+        EventPattern:
+          source:
+            - appointments.pe
+            - appointments.cl
+          detail-type:
+            - AppointmentCompleted
+        Targets:
+          - Arn: !GetAtt CompletedAppointmentsQueue.Arn
+            Id: "ToCompletedQueue"
+
+    CompletedAppointmentsQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - !Ref CompletedAppointmentsQueue
+        PolicyDocument:
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: events.amazonaws.com
+              Action: sqs:SendMessage
+              Resource: !GetAtt CompletedAppointmentsQueue.Arn
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: !GetAtt CompletedAppointmentsRule.Arn
+
+    SqsQueuePE:
       Type: AWS::SQS::Queue
       Properties:
-        QueueName: ${self:service}-sqs-cl-${self:provider.stage}
+        QueueName: appointments-pe-queue
 
-    # Subscriptions SNS → SQS
-    SubscriptionPe:
+    SqsQueueCL:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: appointments-cl-queue
+
+    SnsTopicPE:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: appointments-pe-topic
+
+    SubscriptionPE:
       Type: AWS::SNS::Subscription
       Properties:
-        TopicArn: !Ref SnsTopicPe
         Protocol: sqs
-        Endpoint: !GetAtt SqsPeQueue.Arn
+        TopicArn: !Ref SnsTopicPE
+        Endpoint: !GetAtt SqsQueuePE.Arn
+        RawMessageDelivery: true
 
-    SubscriptionCl:
+    QueuePolicyPE:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues: [!Ref SqsQueuePE]
+        PolicyDocument:
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: sns.amazonaws.com
+              Action: sqs:SendMessage
+              Resource: !GetAtt SqsQueuePE.Arn
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: !Ref SnsTopicPE
+
+    SnsTopicCL:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: appointments-cl-topic
+
+    SubscriptionCL:
       Type: AWS::SNS::Subscription
       Properties:
-        TopicArn: !Ref SnsTopicCl
         Protocol: sqs
-        Endpoint: !GetAtt SqsClQueue.Arn
+        TopicArn: !Ref SnsTopicCL
+        Endpoint: !GetAtt SqsQueueCL.Arn
+        RawMessageDelivery: true
 
-    # EventBridge Bus y regla para enrutar a PE/CL
-    AppointmentBus:
+    QueuePolicyCL:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues: [!Ref SqsQueueCL]
+        PolicyDocument:
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: sns.amazonaws.com
+              Action: sqs:SendMessage
+              Resource: !GetAtt SqsQueueCL.Arn
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: !Ref SnsTopicCL
+
+    AppointmentsEventBus:
       Type: AWS::Events::EventBus
       Properties:
-        Name: ${self:provider.environment.EVENT_BUS}
-
-    AppointmentRule:
-      Type: AWS::Events::Rule
-      Properties:
-        EventBusName: !Ref AppointmentBus
-        EventPattern:
-          source: ["application.appointment"]
-        Targets:
-          - Arn: !GetAtt SqsPeQueue.Arn
-            Id: ToPe
-          - Arn: !GetAtt SqsClQueue.Arn
-            Id: ToCl
-
-    # Cola de confirmaciones
-    ConfirmQueue:
-      Type: AWS::SQS::Queue
-      Properties:
-        QueueName: ${self:service}-confirm-queue-${self:provider.stage}
-
-    # Regla EventBridge que envía solo los eventos AppointmentConfirmed a ConfirmQueue
-    ConfirmRule:
-      Type: AWS::Events::Rule
-      Properties:
-        EventBusName: !Ref AppointmentBus
-        EventPattern:
-          source: ["application.appointment"]
-          detail-type: ["AppointmentConfirmed"]
-        Targets:
-          - Arn: !GetAtt ConfirmQueue.Arn
-            Id: ToConfirmQueue
-
-Outputs:
-  ServiceEndpoint:
-    Description: URL de despliegue HTTP API
-    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+        Name: ${self:provider.environment.EVENT_BUS_NAME}

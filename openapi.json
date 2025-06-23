@@ -1,0 +1,319 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Agenda Médica API - Rimac/Indra",
+    "version": "1.0.0",
+    "description": "API para gestionar citas médicas. Permite crear y listar citas por asegurado.",
+    "contact": {
+      "name": "Gianpiero Benvenuto",
+      "url": "https://github.com/gianpierobenvenuto"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://bfgulowqdi.execute-api.us-east-1.amazonaws.com/dev",
+      "description": "Entorno de prueba"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Appointments",
+      "description": "Operaciones sobre citas médicas"
+    }
+  ],
+  "paths": {
+    "/appointments": {
+      "post": {
+        "tags": ["Appointments"],
+        "summary": "Crear una nueva cita",
+        "operationId": "createAppointment",
+        "requestBody": {
+          "description": "Datos necesarios para crear una cita",
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewAppointment"
+              },
+              "example": {
+                "insuredId": "12345",
+                "scheduleId": {
+                  "scheduleId": 100,
+                  "centerId": 4,
+                  "specialtyId": 3,
+                  "medicId": 4,
+                  "date": "2025-07-01T12:30:00Z"
+                },
+                "countryISO": "PE"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Cita creada exitosamente",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppointmentResponse"
+                },
+                "example": {
+                  "appointmentId": "uuid-1234",
+                  "insuredId": "12345",
+                  "scheduleId": {
+                    "scheduleId": 100,
+                    "centerId": 4,
+                    "specialtyId": 3,
+                    "medicId": 4,
+                    "date": "2025-07-01T12:30:00Z"
+                  },
+                  "countryISO": "PE",
+                  "status": "pending",
+                  "createdAt": "2025-06-23T10:00:00Z",
+                  "updatedAt": null
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidCountryISO"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/appointments/{insuredId}": {
+      "get": {
+        "tags": ["Appointments"],
+        "summary": "Listar citas de un asegurado",
+        "operationId": "listAppointments",
+        "parameters": [
+          {
+            "name": "insuredId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Identificador único del asegurado"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Lista de citas (posiblemente vacía)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AppointmentResponse"
+                  }
+                },
+                "example": [
+                  {
+                    "appointmentId": "uuid-1234",
+                    "insuredId": "12345",
+                    "scheduleId": 10,
+                    "countryISO": "PE",
+                    "status": "pending",
+                    "createdAt": "2025-06-23T10:00:00Z",
+                    "updatedAt": null
+                  }
+                ]
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "SimpleAppointment": {
+        "type": "object",
+        "required": ["insuredId", "scheduleId", "countryISO"],
+        "properties": {
+          "insuredId": {
+            "type": "string",
+            "description": "ID del asegurado"
+          },
+          "scheduleId": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "description": "ID numérico del horario"
+              },
+              {
+                "$ref": "#/components/schemas/CompositeAppointmentSchedule"
+              }
+            ]
+          },
+          "countryISO": {
+            "type": "string",
+            "enum": ["PE", "CL"],
+            "description": "Código ISO del país"
+          }
+        }
+      },
+      "CompositeAppointmentSchedule": {
+        "type": "object",
+        "required": [
+          "scheduleId",
+          "centerId",
+          "specialtyId",
+          "medicId",
+          "date"
+        ],
+        "properties": {
+          "scheduleId": {
+            "type": "integer",
+            "description": "ID del espacio de cita"
+          },
+          "centerId": {
+            "type": "integer",
+            "description": "ID del centro médico"
+          },
+          "specialtyId": {
+            "type": "integer",
+            "description": "ID de la especialidad"
+          },
+          "medicId": {
+            "type": "integer",
+            "description": "ID del médico"
+          },
+          "date": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Fecha y hora de la cita"
+          }
+        }
+      },
+      "NewAppointment": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/SimpleAppointment"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SimpleAppointment"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "scheduleId": {
+                    "$ref": "#/components/schemas/CompositeAppointmentSchedule"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "AppointmentResponse": {
+        "type": "object",
+        "required": [
+          "appointmentId",
+          "insuredId",
+          "scheduleId",
+          "countryISO",
+          "status",
+          "createdAt"
+        ],
+        "properties": {
+          "appointmentId": {
+            "type": "string",
+            "description": "ID único de la cita"
+          },
+          "insuredId": {
+            "type": "string",
+            "description": "ID del asegurado"
+          },
+          "scheduleId": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "$ref": "#/components/schemas/CompositeAppointmentSchedule"
+              }
+            ]
+          },
+          "countryISO": {
+            "type": "string",
+            "description": "Código ISO del país"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "completed"],
+            "description": "Estado de la cita"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp de creación"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Timestamp de última actualización"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Mensaje descriptivo del error"
+          }
+        }
+      }
+    },
+    "responses": {
+      "InvalidCountryISO": {
+        "description": "ISO de país inválido",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "examples": {
+              "invalidISO": {
+                "value": { "error": "Invalid countryISO: XX" }
+              }
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Error interno del servidor",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key",
+        "description": "Clave de API en encabezado"
+      }
+    }
+  }
+}
